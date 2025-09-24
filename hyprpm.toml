@@ -111,3 +111,12 @@ build = [
     "make -C hyprfocus all",
 ]
 since_hyprland = 6066
+
+[wobblyjelly]
+description = "Jelly / wobbly windows when drag, efek like KDE"
+authors = ["neonora"]
+output = "wobblyjelly/wobblyjelly.so"
+build = [
+    "make -C wobblyjelly all",
+]
+since_hyprland = 6066
