@@ -80,7 +80,6 @@ void main() {
     vec2 displaced = aPos + normalize(vec2(dx + 0.0001, dy + 0.0001)) * disp;
 
     // convert to NDC [-1,1] assuming origin (0,0) at window center => need projection done by Hyprland's compositor
-    // Here we assume Hyprland expects coordinates in screen pixel space; many compositors transform later.
     gl_Position = vec4((displaced.x / (uWinSize.x/2.0)), (displaced.y / (uWinSize.y/2.0)), 0.0, 1.0);
     vUV = aUV;
 }
@@ -195,28 +194,20 @@ static void generateGrid(WindowJellyState &st, int cols, int rows, float winW, f
 
 // move begin
 static void onMoveBegin(void* self, SCallbackInfo& info, std::any data) {
-    // data should be pointer to the window object (CWindow*)
     void* pWin = std::any_cast<void*>(data);
     auto &st = g_states[pWin];
     st.dragging = true;
     st.lastTime = duration_cast<duration<double>>(high_resolution_clock::now().time_since_epoch()).count();
-    // initialize shader if needed
     if (!st.shader) st.shader = compileShaderProgram(vertexShaderSrc, fragmentShaderSrc);
 }
 
 // move update (continuous)
 static void onMove(void* self, SCallbackInfo& info, std::any data) {
     void* pWin = std::any_cast<void*>(data);
-    // Expected: info contains new window position; since we don't know exact types,
-    // we'll try to extract a common pair if Hyprland passes them. Otherwise user adapts.
-    // For now, we assume the window object has fields we can query in render phase.
     auto &st = g_states[pWin];
     double now = duration_cast<duration<double>>(high_resolution_clock::now().time_since_epoch()).count();
     double dt = std::max(1e-6, now - st.lastTime);
     st.lastTime = now;
-
-    // here we can't get raw mouse pos generically; instead at actual render time we'll
-    // compute velocity by comparing window position fields (see preRender hook).
     (void)info; (void)data;
 }
 
@@ -225,42 +216,28 @@ static void onMoveEnd(void* self, SCallbackInfo& info, std::any data) {
     void* pWin = std::any_cast<void*>(data);
     auto &st = g_states[pWin];
     st.dragging = false;
-    // leave jelly relax animation to decay naturally (velocity -> 0 due to damping)
 }
 
 // render hook (called per window)
 static void onPreRenderWindow(void* self, SCallbackInfo& info, std::any data) {
-    // data should be pointer/reference to window object (CWindow*)
     void* pWin = std::any_cast<void*>(data);
 
-    // --- IMPORTANT:
-    // The next lines depend on how Hyprland exposes the window structure.
-    // Commonly you'd have something like:
-    // CWindow* pWindow = (CWindow*)pWin;
-    // auto winSize = pWindow->m_vRealSize; // Vector2D { x, y }
-    // auto tex = pWindow->m_pTexture->m_tex; // or pWindow->m_pSurface->getTexture()
-    //
-    // Below are placeholders: replace with your actual field access.
     struct DummyWindow {
         float w, h;
         float xpos, ypos;
         GLuint tex;
     };
-    // if you can cast, do: DummyWindow* pWindow = static_cast<DummyWindow*>(pWin);
-    DummyWindow* pWindow = reinterpret_cast<DummyWindow*>(pWin); // placeholder
+    DummyWindow* pWindow = reinterpret_cast<DummyWindow*>(pWin);
 
     if (!pWindow) return;
 
     auto &st = g_states[pWin];
-    // lazy generate mesh sized to window
     if (!st.vao) {
         generateGrid(st, st.gridCols, st.gridRows, pWindow->w, pWindow->h);
     }
 
-    // compute velocity using stored last pos (simple differentiation)
     double now = duration_cast<duration<double>>(high_resolution_clock::now().time_since_epoch()).count();
     double dt = std::max(1e-6, now - st.lastTime);
-    // if lastX/Y == 0 maybe initialization; we try to keep previous pos
     float newX = pWindow->xpos;
     float newY = pWindow->ypos;
     if (st.lastTime == 0) {
@@ -271,12 +248,9 @@ static void onPreRenderWindow(void* self, SCallbackInfo& info, std::any data) {
     st.lastX = newX; st.lastY = newY;
     st.lastTime = now;
 
-    // choose center point of disturbance at current cursor relative to window center
-    // For simplicity we use window center as center of wave:
     float centerX = 0.0f;
     float centerY = 0.0f;
 
-    // configure shader uniforms
     glUseProgram(st.shader);
     GLint locWinSize = glGetUniformLocation(st.shader, "uWinSize");
     GLint locCenter = glGetUniformLocation(st.shader, "uCenter");
@@ -291,22 +265,19 @@ static void onPreRenderWindow(void* self, SCallbackInfo& info, std::any data) {
     glUniform2f(locCenter, centerX, centerY);
     glUniform2f(locVel, st.vx, st.vy);
     glUniform1f(locTime, t);
-    glUniform1f(locAmp, 6.0f);       // tweak amplitude
-    glUniform1f(locFreq, 0.02f);     // tweak frequency
-    glUniform1f(locDamp, 0.02f);     // tweak damping
+    glUniform1f(locAmp, 6.0f);
+    glUniform1f(locFreq, 0.02f);
+    glUniform1f(locDamp, 0.02f);
 
-    // bind the window texture. Replace with actual window texture handle
     GLuint tex = pWindow->tex;
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
     GLint locTex = glGetUniformLocation(st.shader, "uTex");
     glUniform1i(locTex, 0);
 
-    // blend & state (depends on compositor expectations)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // draw grid
     glBindVertexArray(st.vao);
     glDrawElements(GL_TRIANGLES, st.indexCount, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
@@ -318,12 +289,10 @@ static void onPreRenderWindow(void* self, SCallbackInfo& info, std::any data) {
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
 
-    // register event handlers - names may differ in your Hyprland
     HyprlandAPI::addEventHandler(PHANDLE, "moveBegin", onMoveBegin);
     HyprlandAPI::addEventHandler(PHANDLE, "move", onMove);
     HyprlandAPI::addEventHandler(PHANDLE, "moveEnd", onMoveEnd);
 
-    // register render hook (before window is drawn)
     HyprlandAPI::addRenderHook(PHANDLE, "preRenderWindow", onPreRenderWindow);
 
     return {
@@ -335,7 +304,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    // cleanup GL resources
     for (auto &kv : g_states) {
         auto &st = kv.second;
         if (st.vbo) glDeleteBuffers(1, &st.vbo);
